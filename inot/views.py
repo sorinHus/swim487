@@ -101,8 +101,11 @@ class ProgrameazaView(APIView):
                              f'Dacă nu puteți ajunge, vă rugăm să ne anunțați.'),
                     from_email=settings.DEFAULT_FROM_EMAIL,
                     recipient_list=[p.email],
-                    fail_silently=True,
+                    fail_silently=False,
                 )
+        except Exception:
+            log.exception('Eroare email catre parinte')
+        try:
             if settings.EMAIL_ADMIN:
                 send_mail(
                     subject=f'Programare înot nouă — {p.nume_copil} — {cand}',
@@ -112,7 +115,7 @@ class ProgrameazaView(APIView):
                              f'Observații: {p.observatii or "—"}'),
                     from_email=settings.DEFAULT_FROM_EMAIL,
                     recipient_list=[settings.EMAIL_ADMIN],
-                    fail_silently=True,
+                    fail_silently=False,
                 )
         except Exception:
-            log.exception('Eroare la trimiterea emailului')
+            log.exception('Eroare email catre admin')
