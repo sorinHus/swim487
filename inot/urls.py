@@ -19,6 +19,7 @@ urlpatterns = [
 
     path('instructor/zi/', v.InstructorZiView.as_view()),
     path('instructor/programari/<int:pk>/', v.InstructorProgramareView.as_view()),
+    path('instructor/copii/', v.InstructorCopiiView.as_view()),
     path('instructor/export/', v.InstructorExportView.as_view()),
 
     path('superadmin/instructori/', v.InstructoriView.as_view()),

@@ -8,6 +8,7 @@ from django.contrib.auth.tokens import default_token_generator
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.utils.decorators import method_decorator
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
@@ -212,10 +213,8 @@ class ProgramareInSerializer(serializers.Serializer):
     varsta = serializers.IntegerField(min_value=3, max_value=18)
     avansat = serializers.BooleanField(default=False)
     observatii = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
-    # Doar pentru staff, când programează la cererea altcuiva
-    nume_parinte = serializers.CharField(max_length=100, required=False, allow_blank=True, default='')
-    telefon = serializers.RegexField(r'^[0-9+ ().-]{7,20}$', max_length=20, required=False, allow_blank=True, default='')
-    email = serializers.EmailField(required=False, allow_blank=True, default='')
+    # Doar pentru staff: id-ul contului de părinte al copilului (din căutarea de copii)
+    cont = serializers.IntegerField(required=False)
 
 
 def ser_programare(p, setari):
@@ -250,15 +249,17 @@ class ProgrameazaView(APIView):
         d = ser.validated_data
         grupa = determina_grupa(d['varsta'], d['avansat'])
         if request.user.is_staff or request.user.is_superuser:
-            # Instructor/superadmin programează pentru altcineva: datele părintelui vin din formular
-            if not d['nume_parinte'].strip() or not d['telefon']:
-                raise ValidationError({'detail': 'Completează numele și telefonul părintelui.'})
-            nume_parinte, telefon, email = d['nume_parinte'].strip(), d['telefon'], d['email']
+            # Instructor/superadmin programează un copil existent: programarea se leagă de contul părintelui
+            proprietar = User.objects.filter(pk=d.get('cont'), is_active=True, is_staff=False,
+                                             is_superuser=False).select_related('profil').first()
+            if proprietar is None:
+                raise ValidationError({'detail': 'Alege copilul din căutare.'})
         else:
-            profil = getattr(request.user, 'profil', None)
-            if profil is None:
-                return Response({'detail': 'Completează numele și telefonul în contul tău.'}, status=400)
-            nume_parinte, telefon, email = profil.nume, profil.telefon, request.user.email
+            proprietar = request.user
+        profil = getattr(proprietar, 'profil', None)
+        if profil is None:
+            return Response({'detail': 'Completează numele și telefonul în contul tău.'}, status=400)
+        nume_parinte, telefon, email = profil.nume, profil.telefon, proprietar.email
 
         try:
             with transaction.atomic():
@@ -267,12 +268,12 @@ class ProgrameazaView(APIView):
                 setari = Setari.objects.select_for_update().get(pk=1)
                 verifica_loc(d['sablon'], d['data'], grupa)
                 duplicat = Programare.objects.filter(
-                    sablon_id=d['sablon'], data=d['data'], nume_copil__iexact=d['nume_copil'], user=request.user
+                    sablon_id=d['sablon'], data=d['data'], nume_copil__iexact=d['nume_copil'], user=proprietar
                 ).exclude(status='anulat').exists()
                 if duplicat:
                     raise EroareProgramare('Copilul este deja programat la această oră.')
                 p = Programare.objects.create(
-                    user=request.user, grupa=grupa, sablon_id=d['sablon'], data=d['data'],
+                    user=proprietar, grupa=grupa, sablon_id=d['sablon'], data=d['data'],
                     nume_copil=d['nume_copil'], varsta=d['varsta'], avansat=d['avansat'],
                     observatii=d['observatii'], nume_parinte=nume_parinte, telefon=telefon,
                     email=email)
@@ -437,6 +438,27 @@ class InstructorProgramareView(APIView):
         except EroareProgramare as e:
             return raspuns_eroare(e)
         return Response(ser_instructor(p))
+
+
+class InstructorCopiiView(APIView):
+    """Căutare de copii (din programările conturilor de părinți) pentru a programa la cererea părinților."""
+    permission_classes = [EsteInstructor]
+
+    def get(self, request):
+        q = request.query_params.get('q', '').strip()
+        if len(q) < 2:
+            return Response([])
+        qs = (Programare.objects.filter(user__isnull=False, user__is_staff=False, user__is_superuser=False,
+                                        user__is_active=True)
+              .filter(Q(nume_copil__icontains=q) | Q(nume_parinte__icontains=q) | Q(telefon__icontains=q))
+              .order_by('-creat_la'))
+        copii = {}
+        for p in qs[:300]:
+            copii.setdefault((p.user_id, p.nume_copil.strip().lower()), p)  # cea mai recentă programare a fiecărui copil
+        rezultat = [{'cont': p.user_id, 'nume_copil': p.nume_copil, 'varsta': p.varsta, 'avansat': p.avansat,
+                     'nume_parinte': p.nume_parinte, 'telefon': p.telefon}
+                    for p in list(copii.values())[:15]]
+        return Response(sorted(rezultat, key=lambda c: (c['nume_copil'].lower(), c['nume_parinte'].lower())))
 
 
 class InstructorExportView(APIView):

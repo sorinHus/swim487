@@ -322,25 +322,51 @@ class LoginDinAdminTest(BazaTest):
 
 
 class ProgramareStaffTest(BazaTest):
-    def test_instructorul_programeaza_pentru_altcineva(self):
-        staff = User.objects.create_user('i2@test.ro', 'i2@test.ro', PAROLA, is_staff=True)
-        c = APIClient()
-        c.force_authenticate(staff)
-        d = urmatoarea_data(1)
-        corp = {'sablon': self.sablon_pe(d).id, 'data': d.isoformat(), 'nume_copil': 'Ioana', 'varsta': 5}
-        self.assertEqual(c.post('/api/inot/programeaza/', corp, format='json').status_code, 400)
-        corp.update({'nume_parinte': 'Dan Ionescu', 'telefon': '0722333444'})
-        r = c.post('/api/inot/programeaza/', corp, format='json')
-        self.assertEqual(r.status_code, 201, r.content)
-        p = Programare.objects.get()
-        self.assertEqual((p.nume_parinte, p.telefon, p.email), ('Dan Ionescu', '0722333444', ''))
-        self.assertEqual(len(mail.outbox), 0)
-
-    def test_parintele_nu_poate_trece_alte_date(self):
-        self.inregistreaza()
+    def setUp(self):
+        super().setUp()
+        self.inregistreaza()  # părintele Ana Pop, cu doi copii
         d = urmatoarea_data(5)
+        self.programeaza(d, nume='Mihai', varsta=8, avansat=True)
+        self.programeaza(d, nume='Sara', varsta=5, avansat=False)
+        self.parinte = User.objects.get(username='ana@test.ro')
+        self.staff = APIClient()
+        self.staff.force_authenticate(User.objects.create_user('i2@test.ro', 'i2@test.ro', PAROLA, is_staff=True))
+        mail.outbox.clear()
+
+    def test_cautare_copii(self):
+        r = self.staff.get('/api/inot/instructor/copii/?q=mih').json()
+        self.assertEqual(len(r), 1)
+        self.assertEqual((r[0]['nume_copil'], r[0]['varsta'], r[0]['avansat'], r[0]['nume_parinte'], r[0]['cont']),
+                         ('Mihai', 8, True, 'Ana Pop', self.parinte.id))
+        # după numele părintelui apar ambii copii, o singură dată fiecare
+        self.assertEqual(len(self.staff.get('/api/inot/instructor/copii/?q=Ana').json()), 2)
+        self.assertEqual(self.staff.get('/api/inot/instructor/copii/?q=m').json(), [])
+        self.assertEqual(self.c.get('/api/inot/instructor/copii/?q=mih').status_code, 403)
+
+    def test_programare_legata_de_contul_parintelui(self):
+        d = urmatoarea_data(6)
+        corp = {'sablon': self.sablon_pe(d).id, 'data': d.isoformat(), 'nume_copil': 'Sara', 'varsta': 5}
+        self.assertEqual(self.staff.post('/api/inot/programeaza/', corp, format='json').status_code, 400)  # lipsește contul
+        r = self.staff.post('/api/inot/programeaza/', {**corp, 'cont': self.parinte.id}, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        p = Programare.objects.get(data=d)
+        self.assertEqual((p.user, p.nume_parinte, p.telefon, p.email), (self.parinte, 'Ana Pop', '0712345678', 'ana@test.ro'))
+        self.assertEqual(len(mail.outbox), 1)  # confirmarea ajunge la părinte
+        # părintele o vede (împreună cu celelalte două) și o poate anula
+        self.assertEqual(len(self.c.get('/api/inot/programarile-mele/').json()), 3)
+
+    def test_nu_se_poate_programa_pe_cont_de_staff(self):
+        d = urmatoarea_data(6)
+        r = self.staff.post('/api/inot/programeaza/', {
+            'sablon': self.sablon_pe(d).id, 'data': d.isoformat(), 'nume_copil': 'X', 'varsta': 5,
+            'cont': User.objects.get(username='i2@test.ro').id}, format='json')
+        self.assertEqual(r.status_code, 400)
+
+    def test_parintele_nu_poate_programa_pe_alt_cont(self):
+        alt = User.objects.create_user('alt@test.ro', 'alt@test.ro', PAROLA)
+        Profil.objects.create(user=alt, nume='Alt Parinte', telefon='0700000000')
+        d = urmatoarea_data(6)
         r = self.c.post('/api/inot/programeaza/', {
-            'sablon': self.sablon_pe(d).id, 'data': d.isoformat(), 'nume_copil': 'K', 'varsta': 5,
-            'nume_parinte': 'Altcineva', 'telefon': '0799999999'}, format='json')
+            'sablon': self.sablon_pe(d).id, 'data': d.isoformat(), 'nume_copil': 'X', 'varsta': 5, 'cont': alt.id}, format='json')
         self.assertEqual(r.status_code, 201)
-        self.assertEqual(Programare.objects.get().nume_parinte, 'Ana Pop')
+        self.assertEqual(Programare.objects.get(data=d).user, self.parinte)
