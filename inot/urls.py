@@ -1,5 +1,6 @@
 from django.urls import path
 
+from . import copii as c
 from . import views as v
 
 urlpatterns = [
@@ -12,6 +13,9 @@ urlpatterns = [
     path('auth/reset/', v.ResetareCerereView.as_view()),
     path('auth/reset/confirma/', v.ResetareConfirmaView.as_view()),
     path('cont/', v.ContView.as_view()),
+    path('cont/parola/', v.SchimbaParolaView.as_view()),
+    path('copii/', c.CopiiView.as_view()),
+    path('copii/<int:pk>/', c.CopilView.as_view()),
 
     path('programarile-mele/', v.ProgramarileMeleView.as_view()),
     path('programari/<int:pk>/anuleaza/', v.AnuleazaView.as_view()),

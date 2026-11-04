@@ -23,7 +23,7 @@ from rest_framework.views import APIView
 
 from .export import export_saptamana_response
 from .auth import EsteInstructor, EsteSuperadmin, token_pentru
-from .models import GRUPE, ZILE_RO, Profil, Programare, Setari, determina_grupa
+from .models import GRUPE, ZILE_RO, Copil, Profil, Programare, Setari
 from .services import EroareProgramare, se_poate_modifica, sedinte_disponibile, verifica_loc
 
 log = logging.getLogger(__name__)
@@ -159,11 +159,30 @@ class ContView(APIView):
     def patch(self, request):
         ser = ProfilSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
-        Profil.objects.update_or_create(
-            user=request.user,
-            defaults={'nume': ser.validated_data['nume'].strip(), 'telefon': ser.validated_data['telefon']})
+        nume, telefon = ser.validated_data['nume'].strip(), ser.validated_data['telefon']
+        azi = timezone.localtime(timezone.now()).date()
+        with transaction.atomic():
+            Profil.objects.update_or_create(user=request.user, defaults={'nume': nume, 'telefon': telefon})
+            # Programările viitoare active păstrează datele de contact la zi (cele trecute rămân ca istoric)
+            Programare.objects.filter(user=request.user, data__gte=azi, status='confirmat').update(
+                nume_parinte=nume, telefon=telefon)
         request.user.refresh_from_db()
         return Response(date_cont(request.user))
+
+
+@limiteaza('10/h')
+class SchimbaParolaView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        veche, noua = str(request.data.get('parola_veche', '')), str(request.data.get('parola_noua', ''))
+        if not request.user.check_password(veche):
+            raise ValidationError({'detail': 'Parola curentă nu este corectă.'})
+        eroare_parola(noua, request.user)
+        request.user.set_password(noua)
+        request.user.save(update_fields=['password'])
+        Token.objects.filter(user=request.user).delete()  # închide sesiunile de pe alte dispozitive
+        return raspuns_auth(request.user)
 
 
 def link_resetare(user):
@@ -212,12 +231,12 @@ class ResetareConfirmaView(APIView):
 class ProgramareInSerializer(serializers.Serializer):
     sablon = serializers.IntegerField()
     data = serializers.DateField()
-    nume_copil = serializers.CharField(max_length=100)
-    varsta = serializers.IntegerField(min_value=3, max_value=18)
+    # Copil existent (id) — sau datele unui copil nou, care se salvează pe contul părintelui
+    copil = serializers.IntegerField(required=False)
+    nume_copil = serializers.CharField(max_length=100, required=False, allow_blank=True, default='')
+    varsta = serializers.IntegerField(min_value=3, max_value=18, required=False)
     avansat = serializers.BooleanField(default=False)
     observatii = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
-    # Doar pentru staff: id-ul contului de părinte al copilului (din căutarea de copii)
-    cont = serializers.IntegerField(required=False)
 
 
 def ser_programare(p, setari):
@@ -251,15 +270,8 @@ class ProgrameazaView(APIView):
         ser = ProgramareInSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         d = ser.validated_data
-        grupa = determina_grupa(d['varsta'], d['avansat'])
-        if request.user.is_staff or request.user.is_superuser:
-            # Instructor/superadmin programează un copil existent: programarea se leagă de contul părintelui
-            proprietar = User.objects.filter(pk=d.get('cont'), is_active=True, is_staff=False,
-                                             is_superuser=False).select_related('profil').first()
-            if proprietar is None:
-                raise ValidationError({'detail': 'Alege copilul din căutare.'})
-        else:
-            proprietar = request.user
+        copil = self._copil(request, d)
+        proprietar, grupa = copil.user, copil.grupa
         profil = getattr(proprietar, 'profil', None)
         if profil is None:
             return Response({'detail': 'Completează numele și telefonul în contul tău.'}, status=400)
@@ -272,13 +284,13 @@ class ProgrameazaView(APIView):
                 setari = Setari.objects.select_for_update().get(pk=1)
                 verifica_loc(d['sablon'], d['data'], grupa)
                 duplicat = Programare.objects.filter(
-                    sablon_id=d['sablon'], data=d['data'], nume_copil__iexact=d['nume_copil'], user=proprietar
+                    sablon_id=d['sablon'], data=d['data'], copil=copil
                 ).exclude(status='anulat').exists()
                 if duplicat:
                     raise EroareProgramare('Copilul este deja programat la această oră.')
                 p = Programare.objects.create(
-                    user=proprietar, grupa=grupa, sablon_id=d['sablon'], data=d['data'],
-                    nume_copil=d['nume_copil'], varsta=d['varsta'], avansat=d['avansat'],
+                    user=proprietar, copil=copil, grupa=grupa, sablon_id=d['sablon'], data=d['data'],
+                    nume_copil=copil.nume, varsta=copil.varsta, avansat=copil.avansat,
                     observatii=d['observatii'], nume_parinte=nume_parinte, telefon=telefon,
                     email=email)
         except EroareProgramare as e:
@@ -292,6 +304,29 @@ class ProgrameazaView(APIView):
             'zi': ZILE_RO[p.data.weekday()],
             'ora_start': p.sablon.ora_start.strftime('%H:%M'),
         }, status=status.HTTP_201_CREATED)
+
+    def _copil(self, request, d):
+        """Copilul programării: ales din cont (părinte), din căutare (staff) sau creat acum (părinte, prima programare)."""
+        if request.user.is_staff or request.user.is_superuser:
+            c = Copil.objects.select_related('user__profil').filter(
+                pk=d.get('copil'), user__is_active=True, user__is_staff=False, user__is_superuser=False).first()
+            if c is None:
+                raise ValidationError({'detail': 'Alege copilul din căutare.'})
+            return c
+        if d.get('copil') is not None:
+            c = request.user.copii.filter(pk=d['copil']).first()
+            if c is None:
+                raise ValidationError({'detail': 'Copilul nu există în contul tău.'})
+            return c
+        nume, varsta = d['nume_copil'].strip(), d.get('varsta')
+        if not nume or varsta is None:
+            raise ValidationError({'detail': 'Completează numele și vârsta copilului.'})
+        c = request.user.copii.filter(nume__iexact=nume).first()
+        if c:  # același copil, cu datele (vârstă/nivel) reintroduse acum
+            c.varsta, c.avansat = varsta, d['avansat']
+            c.save(update_fields=['varsta', 'avansat'])
+            return c
+        return Copil.objects.create(user=request.user, nume=nume, varsta=varsta, avansat=d['avansat'])
 
     def _emailuri(self, p, setari):
         grupa = dict(GRUPE)[p.grupa]
@@ -469,24 +504,18 @@ class InstructorProgramareView(APIView):
 
 
 class InstructorCopiiView(APIView):
-    """Căutare de copii (din programările conturilor de părinți) pentru a programa la cererea părinților."""
+    """Căutare de copii (salvați pe conturile părinților) pentru a programa la cererea părinților."""
     permission_classes = [EsteInstructor]
 
     def get(self, request):
         q = request.query_params.get('q', '').strip()
         if len(q) < 2:
             return Response([])
-        qs = (Programare.objects.filter(user__isnull=False, user__is_staff=False, user__is_superuser=False,
-                                        user__is_active=True)
-              .filter(Q(nume_copil__icontains=q) | Q(nume_parinte__icontains=q) | Q(telefon__icontains=q))
-              .order_by('-creat_la'))
-        copii = {}
-        for p in qs[:300]:
-            copii.setdefault((p.user_id, p.nume_copil.strip().lower()), p)  # cea mai recentă programare a fiecărui copil
-        rezultat = [{'cont': p.user_id, 'nume_copil': p.nume_copil, 'varsta': p.varsta, 'avansat': p.avansat,
-                     'nume_parinte': p.nume_parinte, 'telefon': p.telefon}
-                    for p in list(copii.values())[:15]]
-        return Response(sorted(rezultat, key=lambda c: (c['nume_copil'].lower(), c['nume_parinte'].lower())))
+        qs = (Copil.objects.filter(user__is_active=True, user__is_staff=False, user__is_superuser=False)
+              .filter(Q(nume__icontains=q) | Q(user__profil__nume__icontains=q) | Q(user__profil__telefon__icontains=q))
+              .select_related('user__profil').order_by('nume', 'user__profil__nume')[:15])
+        return Response([{'copil': c.id, 'nume_copil': c.nume, 'varsta': c.varsta, 'avansat': c.avansat,
+                          'nume_parinte': c.user.profil.nume, 'telefon': c.user.profil.telefon} for c in qs])
 
 
 class InstructorExportView(APIView):

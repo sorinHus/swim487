@@ -9,7 +9,7 @@ from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
-from .models import Profil, Programare, Sablon, Setari
+from .models import Copil, Profil, Programare, Sablon, Setari
 
 User = get_user_model()
 PAROLA = 'parola-Sigura-93'
@@ -374,8 +374,9 @@ class ProgramareStaffTest(BazaTest):
     def test_cautare_copii(self):
         r = self.staff.get('/api/inot/instructor/copii/?q=mih').json()
         self.assertEqual(len(r), 1)
-        self.assertEqual((r[0]['nume_copil'], r[0]['varsta'], r[0]['avansat'], r[0]['nume_parinte'], r[0]['cont']),
-                         ('Mihai', 8, True, 'Ana Pop', self.parinte.id))
+        mihai = Copil.objects.get(nume='Mihai')
+        self.assertEqual((r[0]['nume_copil'], r[0]['varsta'], r[0]['avansat'], r[0]['nume_parinte'], r[0]['copil']),
+                         ('Mihai', 8, True, 'Ana Pop', mihai.id))
         # după numele părintelui apar ambii copii, o singură dată fiecare
         self.assertEqual(len(self.staff.get('/api/inot/instructor/copii/?q=Ana').json()), 2)
         self.assertEqual(self.staff.get('/api/inot/instructor/copii/?q=m').json(), [])
@@ -383,31 +384,136 @@ class ProgramareStaffTest(BazaTest):
 
     def test_programare_legata_de_contul_parintelui(self):
         d = urmatoarea_data(6)
-        corp = {'sablon': self.sablon_pe(d).id, 'data': d.isoformat(), 'nume_copil': 'Sara', 'varsta': 5}
-        self.assertEqual(self.staff.post('/api/inot/programeaza/', corp, format='json').status_code, 400)  # lipsește contul
-        r = self.staff.post('/api/inot/programeaza/', {**corp, 'cont': self.parinte.id}, format='json')
+        sara = Copil.objects.get(nume='Sara')
+        corp = {'sablon': self.sablon_pe(d).id, 'data': d.isoformat()}
+        self.assertEqual(self.staff.post('/api/inot/programeaza/', corp, format='json').status_code, 400)  # lipsește copilul
+        r = self.staff.post('/api/inot/programeaza/', {**corp, 'copil': sara.id}, format='json')
         self.assertEqual(r.status_code, 201, r.content)
         p = Programare.objects.get(data=d)
-        self.assertEqual((p.user, p.nume_parinte, p.telefon, p.email), (self.parinte, 'Ana Pop', '0712345678', 'ana@test.ro'))
+        self.assertEqual((p.user, p.copil, p.nume_copil, p.nume_parinte, p.telefon, p.email),
+                         (self.parinte, sara, 'Sara', 'Ana Pop', '0712345678', 'ana@test.ro'))
         self.assertEqual(len(mail.outbox), 1)  # confirmarea ajunge la părinte
         # părintele o vede (împreună cu celelalte două) și o poate anula
         self.assertEqual(len(self.c.get('/api/inot/programarile-mele/').json()), 3)
 
-    def test_nu_se_poate_programa_pe_cont_de_staff(self):
+    def test_staff_nu_poate_programa_copil_inexistent_sau_de_staff(self):
         d = urmatoarea_data(6)
-        r = self.staff.post('/api/inot/programeaza/', {
-            'sablon': self.sablon_pe(d).id, 'data': d.isoformat(), 'nume_copil': 'X', 'varsta': 5,
-            'cont': User.objects.get(username='i2@test.ro').id}, format='json')
-        self.assertEqual(r.status_code, 400)
+        corp = {'sablon': self.sablon_pe(d).id, 'data': d.isoformat()}
+        self.assertEqual(self.staff.post('/api/inot/programeaza/', {**corp, 'copil': 99999}, format='json').status_code, 400)
+        self.assertEqual(self.staff.post('/api/inot/programeaza/', {**corp, 'nume_copil': 'X', 'varsta': 5},
+                                         format='json').status_code, 400)  # staff nu creează copii
 
-    def test_parintele_nu_poate_programa_pe_alt_cont(self):
+    def test_parintele_nu_poate_programa_copilul_altui_parinte(self):
         alt = User.objects.create_user('alt@test.ro', 'alt@test.ro', PAROLA)
         Profil.objects.create(user=alt, nume='Alt Parinte', telefon='0700000000')
+        strain = Copil.objects.create(user=alt, nume='Strain', varsta=6, avansat=False)
         d = urmatoarea_data(6)
         r = self.c.post('/api/inot/programeaza/', {
-            'sablon': self.sablon_pe(d).id, 'data': d.isoformat(), 'nume_copil': 'X', 'varsta': 5, 'cont': alt.id}, format='json')
-        self.assertEqual(r.status_code, 201)
-        self.assertEqual(Programare.objects.get(data=d).user, self.parinte)
+            'sablon': self.sablon_pe(d).id, 'data': d.isoformat(), 'copil': strain.id}, format='json')
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(Programare.objects.filter(data=d).exists())
+
+
+class CopiiTest(BazaTest):
+    def setUp(self):
+        super().setUp()
+        self.inregistreaza()
+        self.parinte = User.objects.get(username='ana@test.ro')
+
+    def test_prima_programare_salveaza_copilul(self):
+        d = urmatoarea_data(5)
+        self.assertEqual(self.c.get('/api/inot/copii/').json(), [])
+        self.assertEqual(self.programeaza(d, nume='Mihai', varsta=8, avansat=True).status_code, 201)
+        copii = self.c.get('/api/inot/copii/').json()
+        self.assertEqual([(c['nume'], c['varsta'], c['avansat'], c['grupa'], c['viitoare']) for c in copii],
+                         [('Mihai', 8, True, 'perfectionare', 1)])
+        # a doua programare: copilul se alege din listă, fără a mai retrimite datele
+        d2 = urmatoarea_data(6)
+        r = self.c.post('/api/inot/programeaza/', {
+            'sablon': self.sablon_pe(d2).id, 'data': d2.isoformat(), 'copil': copii[0]['id']}, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        p = Programare.objects.get(data=d2)
+        self.assertEqual((p.nume_copil, p.varsta, p.avansat, p.grupa), ('Mihai', 8, True, 'perfectionare'))
+        self.assertEqual(Copil.objects.count(), 1)
+
+    def test_acelasi_nume_reintrodus_nu_dubleaza_copilul(self):
+        d = urmatoarea_data(5)
+        self.programeaza(d, nume='Mihai', varsta=8, avansat=False)
+        d2 = urmatoarea_data(6)
+        self.programeaza(d2, nume='mihai', varsta=9, avansat=True)  # a crescut și a învățat să înoate
+        self.assertEqual(Copil.objects.count(), 1)
+        c = Copil.objects.get()
+        self.assertEqual((c.varsta, c.avansat), (9, True))
+
+    def test_adauga_editeaza_sterge(self):
+        r = self.c.post('/api/inot/copii/', {'nume': 'Sara', 'varsta': 5, 'avansat': False}, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        cid = r.json()['id']
+        self.assertEqual(self.c.post('/api/inot/copii/', {'nume': 'SARA', 'varsta': 6}, format='json').status_code, 400)  # nume duplicat
+        self.assertEqual(self.c.post('/api/inot/copii/', {'nume': 'X', 'varsta': 2}, format='json').status_code, 400)  # vârstă invalidă
+        r = self.c.patch(f'/api/inot/copii/{cid}/', {'varsta': 6, 'avansat': True}, format='json')
+        self.assertEqual((r.json()['varsta'], r.json()['avansat'], r.json()['nume']), (6, True, 'Sara'))
+        self.assertEqual(self.c.delete(f'/api/inot/copii/{cid}/').status_code, 204)
+        self.assertEqual(self.c.get('/api/inot/copii/').json(), [])
+
+    def test_copiii_sunt_privati(self):
+        self.c.post('/api/inot/copii/', {'nume': 'Sara', 'varsta': 5}, format='json')
+        cid = Copil.objects.get().id
+        alt = APIClient()
+        r = alt.post('/api/inot/auth/register/', {'email': 'b@test.ro', 'parola': PAROLA, 'nume': 'B', 'telefon': '0711111111'}, format='json')
+        alt.credentials(HTTP_AUTHORIZATION='Token ' + r.json()['token'])
+        self.assertEqual(alt.get('/api/inot/copii/').json(), [])
+        self.assertEqual(alt.patch(f'/api/inot/copii/{cid}/', {'nume': 'Furat'}, format='json').status_code, 404)
+        self.assertEqual(alt.delete(f'/api/inot/copii/{cid}/').status_code, 404)
+        self.assertEqual(APIClient().get('/api/inot/copii/').status_code, 401)
+
+    def test_redenumirea_actualizeaza_programarile_viitoare_dar_nu_si_nivelul(self):
+        d = urmatoarea_data(5)
+        self.programeaza(d, nume='Mihai', varsta=6, avansat=False)
+        cid = Copil.objects.get().id
+        r = self.c.patch(f'/api/inot/copii/{cid}/', {'nume': 'Mihnea', 'varsta': 8, 'avansat': True}, format='json')
+        self.assertEqual(r.status_code, 200)
+        p = Programare.objects.get()
+        self.assertEqual((p.nume_copil, p.grupa, p.varsta), ('Mihnea', 'initiere', 6))  # grupa programării rămâne
+
+    def test_stergere_blocata_cu_programari_viitoare(self):
+        d = urmatoarea_data(5)
+        self.programeaza(d, nume='Mihai', varsta=8)
+        cid = Copil.objects.get().id
+        self.assertEqual(self.c.delete(f'/api/inot/copii/{cid}/').status_code, 400)
+        Programare.objects.update(status='anulat')
+        self.assertEqual(self.c.delete(f'/api/inot/copii/{cid}/').status_code, 204)
+        self.assertEqual(Programare.objects.count(), 1)  # istoricul rămâne
+        self.assertIsNone(Programare.objects.get().copil)
+
+
+class ContulMeuTest(BazaTest):
+    def test_editare_date_personale_actualizeaza_programarile_viitoare(self):
+        self.inregistreaza()
+        d = urmatoarea_data(5)
+        self.programeaza(d)
+        r = self.c.patch('/api/inot/cont/', {'nume': 'Ana Maria Pop', 'telefon': '0799888777'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual((r.json()['nume'], r.json()['telefon']), ('Ana Maria Pop', '0799888777'))
+        p = Programare.objects.get()
+        self.assertEqual((p.nume_parinte, p.telefon), ('Ana Maria Pop', '0799888777'))
+        self.assertEqual(self.c.patch('/api/inot/cont/', {'nume': 'X', 'telefon': 'abc'}, format='json').status_code, 400)
+
+    def test_schimbare_parola(self):
+        self.inregistreaza()
+        r = self.c.post('/api/inot/cont/parola/', {'parola_veche': 'gresita', 'parola_noua': 'Noua-parola-2026x'}, format='json')
+        self.assertEqual(r.status_code, 400)
+        r = self.c.post('/api/inot/cont/parola/', {'parola_veche': PAROLA, 'parola_noua': '123'}, format='json')
+        self.assertEqual(r.status_code, 400)  # prea slabă
+        r = self.c.post('/api/inot/cont/parola/', {'parola_veche': PAROLA, 'parola_noua': 'Noua-parola-2026x'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        nou = r.json()['token']  # sesiunea curentă rămâne valabilă prin token nou
+        c2 = APIClient()
+        c2.credentials(HTTP_AUTHORIZATION='Token ' + nou)
+        self.assertEqual(c2.get('/api/inot/cont/').status_code, 200)
+        self.assertEqual(self.c.get('/api/inot/cont/').status_code, 401)  # tokenul vechi s-a închis
+        ok = APIClient().post('/api/inot/auth/login/', {'email': 'ana@test.ro', 'parola': 'Noua-parola-2026x'}, format='json')
+        self.assertEqual(ok.status_code, 200)
 
 
 class ParolaSiParintiTest(BazaTest):

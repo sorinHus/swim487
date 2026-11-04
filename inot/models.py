@@ -60,6 +60,27 @@ class Profil(models.Model):
         return f'{self.nume} ({self.user.email})'
 
 
+class Copil(models.Model):
+    """Un copil al unui părinte: se completează o singură dată și se alege la fiecare programare."""
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='copii')
+    nume = models.CharField(max_length=100)
+    varsta = models.PositiveSmallIntegerField()
+    avansat = models.BooleanField(default=False, help_text='Copilul știe deja să înoate')
+    creat_la = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['nume']
+        verbose_name = 'Copil'
+        verbose_name_plural = 'Copii'
+
+    @property
+    def grupa(self):
+        return determina_grupa(self.varsta, self.avansat)
+
+    def __str__(self):
+        return f'{self.nume} ({self.user.email})'
+
+
 class Sablon(models.Model):
     """O ședință care se repetă săptămânal (ex.: luni 17:00)."""
     zi = models.PositiveSmallIntegerField(choices=list(enumerate(ZILE_RO)))
@@ -96,6 +117,7 @@ class Programare(models.Model):
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
                              related_name='programari')
+    copil = models.ForeignKey(Copil, null=True, blank=True, on_delete=models.SET_NULL, related_name='programari')
     sablon = models.ForeignKey(Sablon, on_delete=models.PROTECT, related_name='programari')
     data = models.DateField()
     grupa = models.CharField(max_length=20, choices=GRUPE)
