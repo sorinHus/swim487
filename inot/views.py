@@ -212,6 +212,10 @@ class ProgramareInSerializer(serializers.Serializer):
     varsta = serializers.IntegerField(min_value=3, max_value=18)
     avansat = serializers.BooleanField(default=False)
     observatii = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
+    # Doar pentru staff, când programează la cererea altcuiva
+    nume_parinte = serializers.CharField(max_length=100, required=False, allow_blank=True, default='')
+    telefon = serializers.RegexField(r'^[0-9+ ().-]{7,20}$', max_length=20, required=False, allow_blank=True, default='')
+    email = serializers.EmailField(required=False, allow_blank=True, default='')
 
 
 def ser_programare(p, setari):
@@ -245,9 +249,16 @@ class ProgrameazaView(APIView):
         ser.is_valid(raise_exception=True)
         d = ser.validated_data
         grupa = determina_grupa(d['varsta'], d['avansat'])
-        profil = getattr(request.user, 'profil', None)
-        if profil is None:
-            return Response({'detail': 'Completează numele și telefonul în contul tău.'}, status=400)
+        if request.user.is_staff or request.user.is_superuser:
+            # Instructor/superadmin programează pentru altcineva: datele părintelui vin din formular
+            if not d['nume_parinte'].strip() or not d['telefon']:
+                raise ValidationError({'detail': 'Completează numele și telefonul părintelui.'})
+            nume_parinte, telefon, email = d['nume_parinte'].strip(), d['telefon'], d['email']
+        else:
+            profil = getattr(request.user, 'profil', None)
+            if profil is None:
+                return Response({'detail': 'Completează numele și telefonul în contul tău.'}, status=400)
+            nume_parinte, telefon, email = profil.nume, profil.telefon, request.user.email
 
         try:
             with transaction.atomic():
@@ -263,8 +274,8 @@ class ProgrameazaView(APIView):
                 p = Programare.objects.create(
                     user=request.user, grupa=grupa, sablon_id=d['sablon'], data=d['data'],
                     nume_copil=d['nume_copil'], varsta=d['varsta'], avansat=d['avansat'],
-                    observatii=d['observatii'], nume_parinte=profil.nume, telefon=profil.telefon,
-                    email=request.user.email)
+                    observatii=d['observatii'], nume_parinte=nume_parinte, telefon=telefon,
+                    email=email)
         except EroareProgramare as e:
             return raspuns_eroare(e)
 
@@ -279,13 +290,14 @@ class ProgrameazaView(APIView):
 
     def _emailuri(self, p, setari):
         grupa = dict(GRUPE)[p.grupa]
-        trimite('Confirmare programare înot',
-                f'Bună ziua, {p.nume_parinte},\n\n'
-                f'Programarea pentru {p.nume_copil} a fost înregistrată:\n'
-                f'  Când:  {cand(p)}\n  Grupa: {grupa}\n\n'
-                f'{setari.mesaj_confirmare}\n\n'
-                f'Poți anula sau reprograma din contul tău, cu cel puțin {setari.ore_anulare} de ore înainte.',
-                p.email)
+        if p.email:
+            trimite('Confirmare programare înot',
+                    f'Bună ziua, {p.nume_parinte},\n\n'
+                    f'Programarea pentru {p.nume_copil} a fost înregistrată:\n'
+                    f'  Când:  {cand(p)}\n  Grupa: {grupa}\n\n'
+                    f'{setari.mesaj_confirmare}\n\n'
+                    f'Poți anula sau reprograma din contul tău, cu cel puțin {setari.ore_anulare} de ore înainte.',
+                    p.email)
         if settings.EMAIL_ADMIN:
             trimite(f'Programare înot nouă — {p.nume_copil} — {cand(p)}',
                     f'Copil: {p.nume_copil} ({p.varsta} ani, {"avansat" if p.avansat else "începător"})\n'

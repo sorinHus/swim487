@@ -319,3 +319,28 @@ class LoginDinAdminTest(BazaTest):
             self.assertTrue(r.json()['cont']['superadmin'])
         r = APIClient().post('/api/inot/auth/login/', {'email': 'sorin', 'parola': 'gresita'}, format='json')
         self.assertEqual(r.status_code, 400)
+
+
+class ProgramareStaffTest(BazaTest):
+    def test_instructorul_programeaza_pentru_altcineva(self):
+        staff = User.objects.create_user('i2@test.ro', 'i2@test.ro', PAROLA, is_staff=True)
+        c = APIClient()
+        c.force_authenticate(staff)
+        d = urmatoarea_data(1)
+        corp = {'sablon': self.sablon_pe(d).id, 'data': d.isoformat(), 'nume_copil': 'Ioana', 'varsta': 5}
+        self.assertEqual(c.post('/api/inot/programeaza/', corp, format='json').status_code, 400)
+        corp.update({'nume_parinte': 'Dan Ionescu', 'telefon': '0722333444'})
+        r = c.post('/api/inot/programeaza/', corp, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        p = Programare.objects.get()
+        self.assertEqual((p.nume_parinte, p.telefon, p.email), ('Dan Ionescu', '0722333444', ''))
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_parintele_nu_poate_trece_alte_date(self):
+        self.inregistreaza()
+        d = urmatoarea_data(5)
+        r = self.c.post('/api/inot/programeaza/', {
+            'sablon': self.sablon_pe(d).id, 'data': d.isoformat(), 'nume_copil': 'K', 'varsta': 5,
+            'nume_parinte': 'Altcineva', 'telefon': '0799999999'}, format='json')
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(Programare.objects.get().nume_parinte, 'Ana Pop')
