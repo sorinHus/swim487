@@ -1,4 +1,4 @@
-# INOT487 — programări la înot
+# SWIM487 — programări la înot
 
 Server Django (API + pagina de admin) pentru pagina publică `487.ro/inot`.
 
