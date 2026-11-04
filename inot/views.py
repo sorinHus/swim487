@@ -601,11 +601,29 @@ class ParinteContView(APIView):
 
     def patch(self, request, pk):
         u = self._get(pk)
-        u.is_active = bool(request.data.get('activ'))
-        u.save(update_fields=['is_active'])
-        if not u.is_active:
-            Token.objects.filter(user=u).delete()
+        if 'parola' in request.data:
+            parola = str(request.data['parola'])
+            eroare_parola(parola, u)
+            u.set_password(parola)
+            u.save(update_fields=['password'])
+            Token.objects.filter(user=u).delete()  # sesiunile vechi se închid
+        if 'activ' in request.data:
+            u.is_active = bool(request.data['activ'])
+            u.save(update_fields=['is_active'])
+            if not u.is_active:
+                Token.objects.filter(user=u).delete()
         return Response({'id': u.id, 'activ': u.is_active})
+
+    def post(self, request, pk):
+        """Trimite părintelui un link de resetare a parolei (el își alege singur parola)."""
+        u = self._get(pk)
+        if not u.email or not u.is_active:
+            raise ValidationError({'detail': 'Contul nu are email sau este dezactivat.'})
+        trimite('Resetare parolă — programări înot',
+                f'Administratorul a inițiat resetarea parolei pentru contul tău. '
+                f'Deschide linkul și alege o parolă nouă:\n\n{link_resetare(u)}\n\n'
+                f'Dacă nu te așteptai la acest mesaj, ignoră-l.', u.email)
+        return Response({'detail': f'Am trimis linkul de resetare la {u.email}.'})
 
     def delete(self, request, pk):
         """Șterge contul. Programările rămân în istoric (fără legătură cu un cont); cele viitoare blochează ștergerea."""

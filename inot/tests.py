@@ -473,3 +473,32 @@ class ExportFormatTest(BazaTest):
         self.assertEqual(ws['J7'].value, 'Ioana')
         self.assertEqual(ws['A23'].value, None)
         self.assertEqual(ws['A24'].value.date(), luni + timedelta(days=2))  # al doilea bloc: miercuri + joi
+
+
+class ResetareParintiTest(BazaTest):
+    def setUp(self):
+        super().setUp()
+        User.objects.create_superuser('boss@test.ro', 'boss@test.ro', PAROLA)
+        self.boss = APIClient()
+        r = self.boss.post('/api/inot/auth/login/', {'email': 'boss@test.ro', 'parola': PAROLA}, format='json')
+        self.boss.credentials(HTTP_AUTHORIZATION='Token ' + r.json()['token'])
+        self.inregistreaza('p@test.ro')
+        self.p = User.objects.get(username='p@test.ro')
+        mail.outbox.clear()
+
+    def test_seteaza_parola_noua(self):
+        r = self.boss.patch(f'/api/inot/superadmin/parinti/{self.p.id}/', {'parola': 'Parola-noua-3391'}, format='json')
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()['activ'])
+        self.assertEqual(self.c.get('/api/inot/cont/').status_code, 401)  # sesiunea veche s-a închis
+        ok = APIClient().post('/api/inot/auth/login/', {'email': 'p@test.ro', 'parola': 'Parola-noua-3391'}, format='json')
+        self.assertEqual(ok.status_code, 200)
+        r = self.boss.patch(f'/api/inot/superadmin/parinti/{self.p.id}/', {'parola': '123'}, format='json')
+        self.assertEqual(r.status_code, 400)
+
+    def test_trimite_link_resetare(self):
+        r = self.boss.post(f'/api/inot/superadmin/parinti/{self.p.id}/')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(mail.outbox[0].to, ['p@test.ro'])
+        self.assertIn('#/reset/', mail.outbox[0].body)
+        self.assertEqual(self.c.post(f'/api/inot/superadmin/parinti/{self.p.id}/').status_code, 403)
