@@ -1,0 +1,12 @@
+Django==6.0.3
+djangorestframework==3.17.0
+django-cors-headers==4.9.0
+django-ratelimit==4.1.0
+django-anymail[resend]
+python-dotenv==1.2.2
+dj-database-url==2.3.0
+psycopg2-binary==2.9.11
+gunicorn==21.2.0
+whitenoise==6.8.2
+openpyxl==3.1.5
+tzdata==2025.3
