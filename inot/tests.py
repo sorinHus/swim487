@@ -437,3 +437,39 @@ class ParolaSiParintiTest(BazaTest):
         boss = User.objects.get(username='boss@test.ro')
         self.assertEqual(self.boss.delete(f'/api/inot/superadmin/parinti/{boss.id}/').status_code, 404)
         self.assertTrue(User.objects.filter(pk=boss.pk).exists())
+
+
+class ExportFormatTest(BazaTest):
+    def test_format_foaie_de_lucru(self):
+        from io import BytesIO
+        from openpyxl import load_workbook
+        for z in range(6):  # a doua oră a zilei, ca în foaia originală (17:00 și 18:00)
+            Sablon.objects.create(zi=z, ora_start=time(18), ora_sfarsit=time(19))
+        staff = User.objects.create_user('ex@test.ro', 'ex@test.ro', PAROLA, is_staff=True)
+        c = APIClient()
+        c.force_authenticate(staff)
+        luni = urmatoarea_data(7)
+        luni -= timedelta(days=luni.weekday())
+        marti = luni + timedelta(days=1)
+        s17 = Sablon.objects.get(zi=1, ora_start=time(17))
+        s18 = Sablon.objects.get(zi=1, ora_start=time(18))
+        for i, (sab, grupa, nume) in enumerate([(s17, 'initiere', 'Mihai'), (s17, 'initiere', 'Sara'),
+                                                (s17, 'perfectionare', 'Dan'), (s18, 'initiere', 'Ioana')]):
+            Programare.objects.create(sablon=sab, data=marti, grupa=grupa, nume_copil=nume, varsta=6,
+                                      nume_parinte='P', telefon='0712345678')
+        Programare.objects.create(sablon=s17, data=marti, grupa='initiere', nume_copil='Anulat', varsta=6,
+                                  nume_parinte='P', telefon='0712345678', status='anulat')
+        r = c.get(f'/api/inot/instructor/export/?luni={luni.isoformat()}')
+        ws = load_workbook(BytesIO(r.content)).active
+        # Luni în coloanele A–D, marți în G–J (două coloane libere între zile), ca în programari_inot.xlsx
+        self.assertEqual((ws['C5'].value, ws['D5'].value, ws['I5'].value), ('Nume', 'Nume', 'Nume'))
+        self.assertEqual((ws['C6'].value, ws['D6'].value), (time(17), time(18)))
+        self.assertEqual((ws['I6'].value, ws['J6'].value), (time(17), time(18)))
+        self.assertEqual(ws['B7'].value, 'Nivel: inițiere / 3-6 ani')
+        self.assertEqual(ws['B14'].value, 'Nivel: perf / 7+ ani')
+        self.assertEqual([ws.cell(r_, 1).value for r_ in (7, 13, 14, 20)], [1, 7, 8, 14])
+        self.assertEqual((ws['I7'].value, ws['I8'].value, ws['I9'].value), ('Mihai', 'Sara', None))  # fără cea anulată
+        self.assertEqual(ws['I14'].value, 'Dan')
+        self.assertEqual(ws['J7'].value, 'Ioana')
+        self.assertEqual(ws['A23'].value, None)
+        self.assertEqual(ws['A24'].value.date(), luni + timedelta(days=2))  # al doilea bloc: miercuri + joi

@@ -21,7 +21,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .admin import export_saptamana_response
+from .export import export_saptamana_response
 from .auth import EsteInstructor, EsteSuperadmin, token_pentru
 from .models import GRUPE, ZILE_RO, Profil, Programare, Setari, determina_grupa
 from .services import EroareProgramare, se_poate_modifica, sedinte_disponibile, verifica_loc

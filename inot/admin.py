@@ -1,56 +1,9 @@
 from datetime import date, timedelta
 
 from django.contrib import admin
-from django.http import HttpResponse
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill
 
-from .models import GRUPE, ZILE_RO, Profil, Programare, Sablon, Setari, ZiInchisa
-
-
-def export_saptamana_response(luni: date):
-    """Foaie Excel pe săptămână (luni–sâmbătă), în formatul foii de lucru actuale."""
-    setari = Setari.get()
-    wb = Workbook()
-    ws = wb.active
-    ws.title = f'Sapt {luni:%d.%m}-{luni + timedelta(days=5):%d.%m}'
-    bold = Font(bold=True)
-    banda = PatternFill('solid', fgColor='EEF2FF')
-    r = 1
-    for zi_idx in range(6):
-        zi = luni + timedelta(days=zi_idx)
-        sabloane = list(Sablon.objects.filter(activ=True, zi=zi.weekday()))
-        if not sabloane:
-            continue
-        ws.cell(r, 1, f'{ZILE_RO[zi.weekday()]} {zi:%d.%m.%Y}').font = bold
-        r += 1
-        for s in sabloane:
-            ws.cell(r, 1, f'{s.ora_start:%H:%M}–{s.ora_sfarsit:%H:%M}').font = bold
-            for c, t in enumerate(['Nr.', 'Copil', 'Vârstă', 'Părinte', 'Telefon', 'Observații'], start=2):
-                cell = ws.cell(r, c, t)
-                cell.font = bold
-                cell.fill = banda
-            r += 1
-            progs = list(Programare.objects.filter(data=zi, sablon=s).exclude(status='anulat'))
-            for grupa, eticheta in GRUPE:
-                ws.cell(r, 1, f'Nivel: {eticheta}').font = bold
-                r += 1
-                de_grupa = [p for p in progs if p.grupa == grupa]
-                for n in range(setari.locuri(grupa)):
-                    p = de_grupa[n] if n < len(de_grupa) else None
-                    ws.cell(r, 2, n + 1)
-                    if p:
-                        valori = [p.nume_copil, p.varsta, p.nume_parinte, p.telefon, p.observatii]
-                        for c, v in enumerate(valori, start=3):
-                            ws.cell(r, c, v)
-                    r += 1
-            r += 1
-    for col, w in zip('ABCDEFG', (24, 6, 28, 8, 26, 16, 30)):
-        ws.column_dimensions[col].width = w
-    resp = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    resp['Content-Disposition'] = f'attachment; filename="programari_inot_{luni:%Y-%m-%d}.xlsx"'
-    wb.save(resp)
-    return resp
+from .export import export_saptamana_response
+from .models import Profil, Programare, Sablon, Setari, ZiInchisa
 
 
 @admin.register(Programare)
