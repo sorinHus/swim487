@@ -127,9 +127,12 @@ class AutentificareView(APIView):
     authentication_classes = []
 
     def post(self, request):
-        email = str(request.data.get('email', '')).strip().lower()
+        ident = str(request.data.get('email', '')).strip()
         parola = str(request.data.get('parola', ''))
-        user = authenticate(request, username=email, password=parola)
+        # Acceptă emailul sau username-ul (conturile create din admin pot avea alt username)
+        cont = (User.objects.filter(username__iexact=ident).first()
+                or User.objects.filter(email__iexact=ident).order_by('id').first())
+        user = authenticate(request, username=cont.username, password=parola) if cont else None
         if user is None:
             return Response({'detail': 'Email sau parolă greșită.'}, status=status.HTTP_400_BAD_REQUEST)
         return raspuns_auth(user)

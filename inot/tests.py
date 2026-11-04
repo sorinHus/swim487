@@ -308,3 +308,14 @@ class SuperadminTest(BazaTest):
     def test_nu_poate_atinge_superadmin(self):
         r = self.boss.post('/api/inot/superadmin/instructori/', {'email': 'boss@test.ro', 'nume': 'B'}, format='json')
         self.assertEqual(r.status_code, 400)
+
+
+class LoginDinAdminTest(BazaTest):
+    def test_login_cu_username_sau_email(self):
+        User.objects.create_superuser('sorin', 'Sorin@Test.ro', PAROLA)
+        for ident in ('sorin', 'SORIN', 'sorin@test.ro'):
+            r = APIClient().post('/api/inot/auth/login/', {'email': ident, 'parola': PAROLA}, format='json')
+            self.assertEqual(r.status_code, 200, ident)
+            self.assertTrue(r.json()['cont']['superadmin'])
+        r = APIClient().post('/api/inot/auth/login/', {'email': 'sorin', 'parola': 'gresita'}, format='json')
+        self.assertEqual(r.status_code, 400)
