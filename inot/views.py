@@ -20,7 +20,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .admin import export_saptamana_response
-from .auth import EsteInstructor, token_pentru
+from .auth import EsteInstructor, EsteSuperadmin, token_pentru
 from .models import GRUPE, ZILE_RO, Profil, Programare, Setari, determina_grupa
 from .services import EroareProgramare, se_poate_modifica, sedinte_disponibile, verifica_loc
 
@@ -74,7 +74,8 @@ def date_cont(user):
         'email': user.email,
         'nume': profil.nume if profil else '',
         'telefon': profil.telefon if profil else '',
-        'instructor': user.is_staff,
+        'instructor': user.is_staff or user.is_superuser,
+        'superadmin': user.is_superuser,
     }
 
 
@@ -158,6 +159,11 @@ class ContView(APIView):
         return Response(date_cont(request.user))
 
 
+def link_resetare(user):
+    uid = urlsafe_base64_encode(force_bytes(user.pk))
+    return f'{settings.FRONTEND_URL}#/reset/{uid}/{default_token_generator.make_token(user)}'
+
+
 @limiteaza('5/h')
 class ResetareCerereView(APIView):
     """Trimite linkul de resetare; răspunsul e mereu același, ca să nu dezvăluim ce emailuri au cont."""
@@ -167,8 +173,7 @@ class ResetareCerereView(APIView):
         email = str(request.data.get('email', '')).strip().lower()
         user = User.objects.filter(username__iexact=email, is_active=True).first()
         if user:
-            uid = urlsafe_base64_encode(force_bytes(user.pk))
-            link = f'{settings.FRONTEND_URL}#/reset/{uid}/{default_token_generator.make_token(user)}'
+            link = link_resetare(user)
             trimite('Resetare parolă — programări înot',
                     f'Ai cerut resetarea parolei. Deschide linkul (valabil câteva ore):\n\n{link}\n\n'
                     f'Dacă nu ai cerut tu, ignoră acest mesaj.', user.email)
@@ -425,3 +430,69 @@ class InstructorExportView(APIView):
     def get(self, request):
         zi = data_din_query(request, 'luni')
         return export_saptamana_response(zi - timedelta(days=zi.weekday()))
+
+
+# ---------- Superadmin: conturi de instructori ----------
+
+def ser_instructor_cont(u):
+    profil = getattr(u, 'profil', None)
+    return {'id': u.id, 'email': u.email, 'nume': profil.nume if profil else '', 'activ': u.is_active}
+
+
+class InstructoriView(APIView):
+    permission_classes = [EsteSuperadmin]
+
+    def get(self, request):
+        qs = User.objects.filter(is_staff=True, is_superuser=False).select_related('profil').order_by('email')
+        return Response([ser_instructor_cont(u) for u in qs])
+
+    @method_decorator(ratelimit(key='user', rate='30/h', method='POST', block=True))
+    def post(self, request):
+        """Creează un instructor (sau promovează un cont de părinte existent) și îi trimite linkul de setare a parolei."""
+        email = str(request.data.get('email', '')).strip().lower()
+        nume = str(request.data.get('nume', '')).strip()[:100]
+        try:
+            serializers.EmailField(max_length=150).run_validation(email)
+        except serializers.ValidationError:
+            raise ValidationError({'detail': 'Email invalid.'})
+        if not nume:
+            raise ValidationError({'detail': 'Completează numele instructorului.'})
+        user = User.objects.filter(username__iexact=email).first()
+        if user is None:
+            user = User(username=email, email=email)
+            user.set_unusable_password()
+        elif user.is_superuser:
+            raise ValidationError({'detail': 'Contul este deja superadmin.'})
+        user.is_staff, user.is_active = True, True
+        user.save()
+        Profil.objects.get_or_create(user=user, defaults={'nume': nume, 'telefon': ''})
+        trimite('Cont instructor — programări înot',
+                f'Bună, {nume},\n\nAi primit acces de instructor la programările de înot.\n'
+                f'Setează-ți parola aici, apoi autentifică-te:\n\n{link_resetare(user)}',
+                user.email)
+        return Response(ser_instructor_cont(user), status=status.HTTP_201_CREATED)
+
+
+class InstructorContView(APIView):
+    permission_classes = [EsteSuperadmin]
+
+    def _get(self, pk):
+        try:
+            return User.objects.select_related('profil').get(pk=pk, is_staff=True, is_superuser=False)
+        except User.DoesNotExist:
+            raise NotFound('Instructorul nu există.')
+
+    def patch(self, request, pk):
+        u = self._get(pk)
+        u.is_active = bool(request.data.get('activ'))
+        u.save(update_fields=['is_active'])
+        if not u.is_active:
+            Token.objects.filter(user=u).delete()
+        return Response(ser_instructor_cont(u))
+
+    def delete(self, request, pk):
+        """Retrage rolul de instructor (contul rămâne, ca simplu cont de părinte)."""
+        u = self._get(pk)
+        u.is_staff = False
+        u.save(update_fields=['is_staff'])
+        return Response(status=status.HTTP_204_NO_CONTENT)

@@ -32,4 +32,10 @@ def token_pentru(user) -> str:
 class EsteInstructor(BasePermission):
     def has_permission(self, request, view):
         u = request.user
-        return bool(u and u.is_authenticated and u.is_active and u.is_staff)
+        return bool(u and u.is_authenticated and u.is_active and (u.is_staff or u.is_superuser))
+
+
+class EsteSuperadmin(BasePermission):
+    def has_permission(self, request, view):
+        u = request.user
+        return bool(u and u.is_authenticated and u.is_active and u.is_superuser)

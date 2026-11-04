@@ -256,3 +256,55 @@ class InstructorTest(BazaTest):
         r = self.instr.get(f'/api/inot/instructor/export/?luni={self.d.isoformat()}')
         self.assertEqual(r.status_code, 200)
         self.assertIn('spreadsheetml', r['Content-Type'])
+
+
+class SuperadminTest(BazaTest):
+    def setUp(self):
+        super().setUp()
+        User.objects.create_superuser('boss@test.ro', 'boss@test.ro', PAROLA)
+        self.boss = APIClient()
+        r = self.boss.post('/api/inot/auth/login/', {'email': 'boss@test.ro', 'parola': PAROLA}, format='json')
+        self.assertTrue(r.json()['cont']['superadmin'])
+        self.boss.credentials(HTTP_AUTHORIZATION='Token ' + r.json()['token'])
+
+    def test_doar_superadmin(self):
+        self.inregistreaza()
+        self.assertEqual(self.c.get('/api/inot/superadmin/instructori/').status_code, 403)
+        self.assertEqual(APIClient().get('/api/inot/superadmin/instructori/').status_code, 401)
+        staff = User.objects.create_user('i@test.ro', 'i@test.ro', PAROLA, is_staff=True)
+        c = APIClient()
+        c.force_authenticate(staff)
+        self.assertEqual(c.post('/api/inot/superadmin/instructori/', {'email': 'x@test.ro', 'nume': 'X'}, format='json').status_code, 403)
+
+    def test_creeaza_instructor_si_seteaza_parola(self):
+        r = self.boss.post('/api/inot/superadmin/instructori/', {'email': 'Nou@test.ro', 'nume': 'Nou'}, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        u = User.objects.get(username='nou@test.ro')
+        self.assertTrue(u.is_staff and not u.is_superuser and not u.has_usable_password())
+        link = [x for x in mail.outbox[-1].body.split() if x.startswith('https://exemplu.test/inot/#/reset/')][0]
+        uid, token = link.split('#/reset/')[1].split('/')
+        r = APIClient().post('/api/inot/auth/reset/confirma/', {'uid': uid, 'token': token, 'parola': 'Instr-parola-52q'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertTrue(r.json()['cont']['instructor'])
+        self.assertFalse(r.json()['cont']['superadmin'])
+        self.assertEqual(len(self.boss.get('/api/inot/superadmin/instructori/').json()), 1)
+
+    def test_promoveaza_cont_existent_si_dezactiveaza(self):
+        self.inregistreaza('p@test.ro')
+        r = self.boss.post('/api/inot/superadmin/instructori/', {'email': 'p@test.ro', 'nume': 'P'}, format='json')
+        self.assertEqual(r.status_code, 201)
+        uid = r.json()['id']
+        self.assertTrue(User.objects.get(pk=uid).has_usable_password())
+        self.assertEqual(self.c.get('/api/inot/instructor/zi/').status_code, 200)
+        self.boss.patch(f'/api/inot/superadmin/instructori/{uid}/', {'activ': False}, format='json')
+        self.assertEqual(self.c.get('/api/inot/instructor/zi/').status_code, 401)  # tokenul a fost șters
+        self.boss.patch(f'/api/inot/superadmin/instructori/{uid}/', {'activ': True}, format='json')
+        self.assertEqual(self.boss.delete(f'/api/inot/superadmin/instructori/{uid}/').status_code, 204)
+        self.assertFalse(User.objects.get(pk=uid).is_staff)
+
+    def test_superadmin_vede_pagina_instructor(self):
+        self.assertEqual(self.boss.get('/api/inot/instructor/zi/').status_code, 200)
+
+    def test_nu_poate_atinge_superadmin(self):
+        r = self.boss.post('/api/inot/superadmin/instructori/', {'email': 'boss@test.ro', 'nume': 'B'}, format='json')
+        self.assertEqual(r.status_code, 400)
