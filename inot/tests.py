@@ -646,3 +646,44 @@ class ResetareParintiTest(BazaTest):
         self.assertEqual(mail.outbox[0].to, ['p@test.ro'])
         self.assertIn('#/reset/', mail.outbox[0].body)
         self.assertEqual(self.c.post(f'/api/inot/superadmin/parinti/{self.p.id}/').status_code, 403)
+
+
+class SchimbaEmailTest(BazaTest):
+    def setUp(self):
+        super().setUp()
+        User.objects.create_superuser('boss@test.ro', 'boss@test.ro', PAROLA)
+        self.boss = APIClient()
+        r = self.boss.post('/api/inot/auth/login/', {'email': 'boss@test.ro', 'parola': PAROLA}, format='json')
+        self.boss.credentials(HTTP_AUTHORIZATION='Token ' + r.json()['token'])
+        self.inregistreaza('vechi@test.ro')
+        self.p = User.objects.get(username='vechi@test.ro')
+
+    def test_superadmin_schimba_emailul_parintelui(self):
+        r = self.boss.patch(f'/api/inot/superadmin/parinti/{self.p.id}/', {'email': 'Nou@Test.ro'}, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.assertEqual(r.json()['email'], 'nou@test.ro')
+        self.p.refresh_from_db()
+        self.assertEqual((self.p.username, self.p.email), ('nou@test.ro', 'nou@test.ro'))
+        ok = APIClient().post('/api/inot/auth/login/', {'email': 'nou@test.ro', 'parola': PAROLA}, format='json')
+        self.assertEqual(ok.status_code, 200)
+        vechi = APIClient().post('/api/inot/auth/login/', {'email': 'vechi@test.ro', 'parola': PAROLA}, format='json')
+        self.assertEqual(vechi.status_code, 400)
+
+    def test_email_invalid_sau_deja_folosit(self):
+        for corp in ({'email': 'nu-e-email'}, {'email': 'boss@test.ro'}):
+            r = self.boss.patch(f'/api/inot/superadmin/parinti/{self.p.id}/', corp, format='json')
+            self.assertEqual(r.status_code, 400, corp)
+        self.p.refresh_from_db()
+        self.assertEqual(self.p.email, 'vechi@test.ro')
+
+    def test_instructor_si_drepturi(self):
+        r = self.boss.post('/api/inot/superadmin/instructori/', {'email': 'i@test.ro', 'nume': 'I', 'parola': 'Parola-comuna-47'}, format='json')
+        iid = r.json()['id']
+        r = self.boss.patch(f'/api/inot/superadmin/instructori/{iid}/', {'email': 'instr@test.ro'}, format='json')
+        self.assertEqual((r.status_code, r.json()['email']), (200, 'instr@test.ro'))
+        # părintele nu își poate schimba emailul (nici prin cont/)
+        r = self.c.patch('/api/inot/cont/', {'nume': 'Ana', 'telefon': '0712345678', 'email': 'furat@test.ro'}, format='json')
+        self.assertEqual(r.status_code, 200)
+        self.p.refresh_from_db()
+        self.assertEqual(self.p.email, 'vechi@test.ro')
+        self.assertEqual(self.c.patch(f'/api/inot/superadmin/parinti/{self.p.id}/', {'email': 'x@test.ro'}, format='json').status_code, 403)

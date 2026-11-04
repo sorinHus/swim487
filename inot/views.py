@@ -528,6 +528,19 @@ class InstructorExportView(APIView):
 
 # ---------- Superadmin: conturi de instructori ----------
 
+def seteaza_email(u, email):
+    """Doar superadmin-ul schimbă emailul unui cont. Emailul e și numele de utilizator, deci le păstrăm identice."""
+    email = str(email).strip().lower()
+    try:
+        serializers.EmailField(max_length=150).run_validation(email)
+    except serializers.ValidationError:
+        raise ValidationError({'detail': 'Email invalid.'})
+    if User.objects.exclude(pk=u.pk).filter(Q(username__iexact=email) | Q(email__iexact=email)).exists():
+        raise ValidationError({'detail': 'Există deja un cont cu acest email.'})
+    u.username = u.email = email
+    u.save(update_fields=['username', 'email'])
+
+
 def ser_instructor_cont(u):
     profil = getattr(u, 'profil', None)
     return {'id': u.id, 'email': u.email, 'nume': profil.nume if profil else '', 'activ': u.is_active}
@@ -592,6 +605,8 @@ class InstructorContView(APIView):
 
     def patch(self, request, pk):
         u = self._get(pk)
+        if 'email' in request.data:
+            seteaza_email(u, request.data['email'])
         if 'parola' in request.data:
             parola = str(request.data['parola'])
             eroare_parola(parola, u)
@@ -655,6 +670,8 @@ class ParinteContView(APIView):
 
     def patch(self, request, pk):
         u = self._get(pk)
+        if 'email' in request.data:
+            seteaza_email(u, request.data['email'])
         if 'parola' in request.data:
             parola = str(request.data['parola'])
             eroare_parola(parola, u)
@@ -666,7 +683,7 @@ class ParinteContView(APIView):
             u.save(update_fields=['is_active'])
             if not u.is_active:
                 Token.objects.filter(user=u).delete()
-        return Response({'id': u.id, 'activ': u.is_active})
+        return Response({'id': u.id, 'activ': u.is_active, 'email': u.email})
 
     def post(self, request, pk):
         """Trimite părintelui un link de resetare a parolei (el își alege singur parola)."""
