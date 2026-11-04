@@ -5,7 +5,7 @@ from django.http import HttpResponse
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
-from .models import GRUPE, ZILE_RO, Programare, Sablon, Setari, ZiInchisa
+from .models import GRUPE, ZILE_RO, Profil, Programare, Sablon, Setari, ZiInchisa
 
 
 def export_saptamana_response(luni: date):
@@ -76,6 +76,12 @@ class ProgramareAdmin(admin.ModelAdmin):
     @admin.action(description='Anulează programările selectate')
     def marcheaza_anulat(self, request, queryset):
         queryset.update(status='anulat')
+
+
+@admin.register(Profil)
+class ProfilAdmin(admin.ModelAdmin):
+    list_display = ('nume', 'telefon', 'user')
+    search_fields = ('nume', 'telefon', 'user__email')
 
 
 @admin.register(Sablon)

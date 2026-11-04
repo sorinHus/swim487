@@ -27,6 +27,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    'rest_framework.authtoken',
     'inot',
 ]
 
@@ -88,7 +89,7 @@ _cors = os.getenv('CORS_ALLOWED_ORIGINS', 'http://localhost:8000,http://127.0.0.
 CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors.split(',') if o.strip()]
 
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': (),
+    'DEFAULT_AUTHENTICATION_CLASSES': ('inot.auth.TokenCuExpirare',),
     'DEFAULT_PERMISSION_CLASSES': ('rest_framework.permissions.AllowAny',),
     'DEFAULT_RENDERER_CLASSES': ('rest_framework.renderers.JSONRenderer',),
 }
@@ -98,6 +99,8 @@ EMAIL_BACKEND = 'anymail.backends.resend.EmailBackend'
 ANYMAIL = {'RESEND_API_KEY': os.getenv('RESEND_API_KEY', '')}
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'onboarding@resend.dev')
 EMAIL_ADMIN = os.getenv('EMAIL_ADMIN', '')
+# Pagina publică (linkul din emailul de resetare parolă)
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://487.ro/inot/')
 EMAIL_TIMEOUT = 10
 if DEBUG and not os.getenv('RESEND_API_KEY'):
     EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'

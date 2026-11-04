@@ -51,3 +51,29 @@ def sedinte_disponibile(de_la: date | None = None):
         zi += timedelta(days=1)
     rezultat.sort(key=lambda r: (r['data'], r['ora_start']))
     return rezultat
+
+
+class EroareProgramare(Exception):
+    """Programarea nu se poate face/modifica; mesajul se afișează părintelui."""
+    def __init__(self, mesaj, cod=409):
+        super().__init__(mesaj)
+        self.mesaj, self.cod = mesaj, cod
+
+
+def se_poate_modifica(p: Programare, setari: Setari | None = None) -> bool:
+    """Anulare/reprogramare: doar programări active, cu cel puțin `ore_anulare` ore înainte."""
+    setari = setari or Setari.get()
+    return p.status == 'confirmat' and p.start - _acum_local() >= timedelta(hours=setari.ore_anulare)
+
+
+def verifica_loc(sablon_id: int, data: date, grupa: str):
+    """Verifică (în tranzacție) că ședința există și are loc liber pe grupă."""
+    liber = next(
+        (s for s in sedinte_disponibile(data)
+         if s['sablon'] == sablon_id and s['data'] == data.isoformat()),
+        None,
+    )
+    if liber is None:
+        raise EroareProgramare('Ședința nu mai este disponibilă.')
+    if liber['locuri'][grupa] <= 0:
+        raise EroareProgramare('Nu mai sunt locuri în această grupă la această oră.')

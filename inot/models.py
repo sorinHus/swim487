@@ -1,5 +1,6 @@
 from datetime import datetime
 
+from django.conf import settings
 from django.db import models
 
 ZILE_RO = ['Luni', 'Marți', 'Miercuri', 'Joi', 'Vineri', 'Sâmbătă', 'Duminică']
@@ -24,6 +25,8 @@ class Setari(models.Model):
         default=2, help_text='Cu câte săptămâni în avans se pot face programări')
     ore_inchidere = models.PositiveSmallIntegerField(
         default=2, help_text='Programările se închid cu atâtea ore înainte de începerea ședinței')
+    ore_anulare = models.PositiveSmallIntegerField(
+        default=48, help_text='Părintele poate anula/reprograma doar cu cel puțin atâtea ore înainte de ședință')
     mesaj_confirmare = models.TextField(
         blank=True, help_text='Text adăugat în emailul de confirmare (adresă, ce să aducă etc.)')
 
@@ -41,6 +44,20 @@ class Setari(models.Model):
 
     def locuri(self, grupa):
         return self.locuri_initiere if grupa == GRUPA_INITIERE else self.locuri_perfectionare
+
+
+class Profil(models.Model):
+    """Datele de contact ale părintelui (contul folosește emailul ca nume de utilizator)."""
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='profil')
+    nume = models.CharField(max_length=100)
+    telefon = models.CharField(max_length=20)
+
+    class Meta:
+        verbose_name = 'Profil părinte'
+        verbose_name_plural = 'Profiluri părinți'
+
+    def __str__(self):
+        return f'{self.nume} ({self.user.email})'
 
 
 class Sablon(models.Model):
@@ -77,6 +94,8 @@ class ZiInchisa(models.Model):
 class Programare(models.Model):
     STATUS = [('confirmat', 'Confirmat'), ('anulat', 'Anulat'), ('prezent', 'Prezent')]
 
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
+                             related_name='programari')
     sablon = models.ForeignKey(Sablon, on_delete=models.PROTECT, related_name='programari')
     data = models.DateField()
     grupa = models.CharField(max_length=20, choices=GRUPE)
@@ -95,6 +114,10 @@ class Programare(models.Model):
         verbose_name = 'Programare'
         verbose_name_plural = 'Programări'
         indexes = [models.Index(fields=['data', 'sablon', 'grupa'])]
+
+    @property
+    def start(self):
+        return datetime.combine(self.data, self.sablon.ora_start)
 
     def __str__(self):
         return f'{self.nume_copil} — {self.data:%d.%m.%Y} {self.sablon.ora_start:%H:%M}'
