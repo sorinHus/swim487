@@ -246,11 +246,49 @@ class InstructorTest(BazaTest):
         self.assertEqual(self.p.status, 'prezent')
         self.assertEqual(self.instr.patch(f'/api/inot/instructor/programari/{self.p.id}/', {'status': 'x'}, format='json').status_code, 400)
 
-    def test_instructorul_anuleaza_fara_regula_48h(self):
-        acum = datetime.combine(self.d, time(17)) - timedelta(hours=5)
-        with mock.patch('inot.services._acum_local', return_value=acum):
-            r = self.instr.patch(f'/api/inot/instructor/programari/{self.p.id}/', {'status': 'anulat'}, format='json')
-        self.assertEqual(r.status_code, 200)
+    def test_prezent_si_absent(self):
+        url = f'/api/inot/instructor/programari/{self.p.id}/'
+        self.assertEqual(self.instr.patch(url, {'status': 'absent'}, format='json').json()['status'], 'absent')
+        self.p.refresh_from_db()
+        self.assertEqual(self.p.status, 'absent')
+        self.assertEqual(self.instr.patch(url, {'status': 'confirmat'}, format='json').status_code, 200)  # corectare
+        # anularea nu mai trece pe această rută
+        self.assertEqual(self.instr.patch(url, {'status': 'anulat'}, format='json').status_code, 400)
+
+    def test_instructorul_anuleaza_cu_regula_48h(self):
+        url = f'/api/inot/instructor/programari/{self.p.id}/anuleaza/'
+        sub = datetime.combine(self.d, time(17)) - timedelta(hours=47)
+        with mock.patch('inot.services._acum_local', return_value=sub):
+            zi = self.instr.get(f'/api/inot/instructor/zi/?data={self.d.isoformat()}').json()['programari'][0]
+            self.assertFalse(zi['modificabil'])
+            self.assertEqual(zi['ore_anulare'], 48)
+            self.assertEqual(self.instr.post(url).status_code, 403)
+        self.p.refresh_from_db()
+        self.assertEqual(self.p.status, 'confirmat')
+        peste = datetime.combine(self.d, time(17)) - timedelta(hours=49)
+        with mock.patch('inot.services._acum_local', return_value=peste):
+            self.assertEqual(self.instr.post(url).status_code, 200)
+        self.p.refresh_from_db()
+        self.assertEqual(self.p.status, 'anulat')
+        self.assertEqual(mail.outbox[-1].to, ['ana@test.ro'])  # părintele e anunțat
+
+    def test_instructorul_reprogrameaza_cu_regula_48h(self):
+        d2 = urmatoarea_data(5)
+        if d2.weekday() == self.d.weekday():
+            d2 += timedelta(days=1)
+            if d2.weekday() == 6:
+                d2 += timedelta(days=1)
+        corp = {'sablon': self.sablon_pe(d2).id, 'data': d2.isoformat()}
+        url = f'/api/inot/instructor/programari/{self.p.id}/reprogrameaza/'
+        sub = datetime.combine(self.d, time(17)) - timedelta(hours=10)
+        with mock.patch('inot.services._acum_local', return_value=sub):
+            self.assertEqual(self.instr.post(url, corp, format='json').status_code, 403)
+        r = self.instr.post(url, corp, format='json')
+        self.assertEqual(r.status_code, 200, r.content)
+        self.p.refresh_from_db()
+        self.assertEqual(self.p.data, d2)
+        # părintele nu poate folosi rutele de instructor
+        self.assertEqual(self.c.post(url, corp, format='json').status_code, 403)
 
     def test_export_excel(self):
         r = self.instr.get(f'/api/inot/instructor/export/?luni={self.d.isoformat()}')

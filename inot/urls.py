@@ -19,6 +19,8 @@ urlpatterns = [
 
     path('instructor/zi/', v.InstructorZiView.as_view()),
     path('instructor/programari/<int:pk>/', v.InstructorProgramareView.as_view()),
+    path('instructor/programari/<int:pk>/anuleaza/', v.InstructorAnuleazaView.as_view()),
+    path('instructor/programari/<int:pk>/reprogrameaza/', v.InstructorReprogrameazaView.as_view()),
     path('instructor/copii/', v.InstructorCopiiView.as_view()),
     path('instructor/export/', v.InstructorExportView.as_view()),
 

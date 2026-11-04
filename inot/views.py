@@ -235,6 +235,7 @@ def ser_programare(p, setari):
         'observatii': p.observatii,
         'status': p.status,
         'modificabil': se_poate_modifica(p, setari),
+        'ore_anulare': setari.ore_anulare,
     }
 
 
@@ -323,19 +324,22 @@ class ProgramareParinteView(APIView):
     """Baza pentru anulare/reprogramare: blochează rândul și verifică regula orelor."""
     permission_classes = [IsAuthenticated]
 
+    def _filtru(self, request):
+        """Părintele lucrează doar cu programările lui."""
+        return {'user': request.user}
+
     def _blocheaza(self, request, pk):
         Setari.objects.get_or_create(pk=1)
         setari = Setari.objects.select_for_update().get(pk=1)
         try:
-            p = Programare.objects.select_related('sablon').get(pk=pk, user=request.user)
+            p = Programare.objects.select_related('sablon').get(pk=pk, **self._filtru(request))
         except Programare.DoesNotExist:
             raise NotFound('Programarea nu există.')
         if p.status != 'confirmat':
             raise EroareProgramare('Programarea nu mai este activă.')
         if not se_poate_modifica(p, setari):
             raise EroareProgramare(
-                f'Programarea se poate modifica doar cu cel puțin {setari.ore_anulare} de ore înainte. '
-                f'Te rugăm să ne contactezi telefonic.', 403)
+                f'Anularea și reprogramarea se pot face doar cu cel puțin {setari.ore_anulare} de ore înainte de ședință.', 403)
         return p, setari
 
 
@@ -382,10 +386,28 @@ class ReprogrameazaView(ProgramareParinteView):
         return Response(ser_programare(p, setari))
 
 
+class InstructorAnuleazaView(AnuleazaView):
+    """Instructorul anulează orice programare, cu aceeași regulă a orelor ca părintele."""
+    permission_classes = [EsteInstructor]
+
+    def _filtru(self, request):
+        return {}
+
+
+class InstructorReprogrameazaView(ReprogrameazaView):
+    permission_classes = [EsteInstructor]
+
+    def _filtru(self, request):
+        return {}
+
+
 # ---------- Instructor ----------
 
-def ser_instructor(p):
+def ser_instructor(p, setari):
     return {
+        'data': p.data.isoformat(),
+        'modificabil': se_poate_modifica(p, setari),
+        'ore_anulare': setari.ore_anulare,
         'id': p.id,
         'sablon': p.sablon_id,
         'ora_start': p.sablon.ora_start.strftime('%H:%M'),
@@ -413,9 +435,10 @@ class InstructorZiView(APIView):
 
     def get(self, request):
         zi = data_din_query(request)
+        setari = Setari.get()
         qs = Programare.objects.filter(data=zi).select_related('sablon').order_by('sablon__ora_start', 'grupa', 'creat_la')
         return Response({'data': zi.isoformat(), 'zi': ZILE_RO[zi.weekday()],
-                         'programari': [ser_instructor(p) for p in qs]})
+                         'programari': [ser_instructor(p, setari) for p in qs]})
 
 
 class InstructorProgramareView(APIView):
@@ -423,24 +446,26 @@ class InstructorProgramareView(APIView):
 
     def patch(self, request, pk):
         nou = request.data.get('status')
-        if nou not in ('confirmat', 'anulat', 'prezent'):
+        # Anularea are rută proprie (regula orelor, emailuri); aici doar prezența și repunerea
+        if nou not in ('confirmat', 'prezent', 'absent'):
             return Response({'detail': 'Status invalid.'}, status=400)
         try:
             with transaction.atomic():
                 Setari.objects.get_or_create(pk=1)
                 Setari.objects.select_for_update().get(pk=1)
+                setari = Setari.objects.get(pk=1)
                 try:
                     p = Programare.objects.select_related('sablon').get(pk=pk)
                 except Programare.DoesNotExist:
                     raise NotFound('Programarea nu există.')
-                if p.status == 'anulat' and nou != 'anulat':
+                if p.status == 'anulat':
                     # Repunerea unei programări anulate nu are voie să depășească locurile grupei
                     verifica_loc(p.sablon_id, p.data, p.grupa)
                 p.status = nou
                 p.save(update_fields=['status'])
         except EroareProgramare as e:
             return raspuns_eroare(e)
-        return Response(ser_instructor(p))
+        return Response(ser_instructor(p, setari))
 
 
 class InstructorCopiiView(APIView):

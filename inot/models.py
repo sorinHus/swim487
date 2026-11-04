@@ -92,7 +92,7 @@ class ZiInchisa(models.Model):
 
 
 class Programare(models.Model):
-    STATUS = [('confirmat', 'Confirmat'), ('anulat', 'Anulat'), ('prezent', 'Prezent')]
+    STATUS = [('confirmat', 'Confirmat'), ('anulat', 'Anulat'), ('prezent', 'Prezent'), ('absent', 'Absent')]
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
                              related_name='programari')
