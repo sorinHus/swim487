@@ -8,7 +8,8 @@ from django.contrib.auth.tokens import default_token_generator
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
 from django.db import IntegrityError, transaction
-from django.db.models import Q
+from django.db.models import Count, Q
+from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
@@ -81,6 +82,8 @@ def date_cont(user):
 
 
 def raspuns_auth(user):
+    user.last_login = timezone.now()  # autentificarea cu token nu o setează singură; o folosim la „conturi inactive"
+    user.save(update_fields=['last_login'])
     return Response({'token': token_pentru(user), 'cont': date_cont(user)})
 
 
@@ -494,19 +497,33 @@ class InstructoriView(APIView):
             raise ValidationError({'detail': 'Email invalid.'})
         if not nume:
             raise ValidationError({'detail': 'Completează numele instructorului.'})
+        parola = str(request.data.get('parola', ''))
         user = User.objects.filter(username__iexact=email).first()
         if user is None:
             user = User(username=email, email=email)
-            user.set_unusable_password()
+            if parola:
+                eroare_parola(parola, user)
+                user.set_password(parola)
+            else:
+                user.set_unusable_password()
         elif user.is_superuser:
             raise ValidationError({'detail': 'Contul este deja superadmin.'})
+        elif parola:
+            # Nu suprascriem parola unui cont existent (ar rămâne părintele blocat în afara contului)
+            raise ValidationError({'detail': 'Există deja un cont cu acest email: las-o goală (își păstrează parola).'})
         user.is_staff, user.is_active = True, True
         user.save()
         Profil.objects.get_or_create(user=user, defaults={'nume': nume, 'telefon': ''})
-        trimite('Cont instructor — programări înot',
-                f'Bună, {nume},\n\nAi primit acces de instructor la programările de înot.\n'
-                f'Setează-ți parola aici, apoi autentifică-te:\n\n{link_resetare(user)}',
-                user.email)
+        if parola:
+            trimite('Cont instructor — programări înot',
+                    f'Bună, {nume},\n\nAi primit acces de instructor la programările de înot.\n'
+                    f'Autentifică-te cu acest email și parola primită de la administrator: {settings.FRONTEND_URL}',
+                    user.email)
+        else:
+            trimite('Cont instructor — programări înot',
+                    f'Bună, {nume},\n\nAi primit acces de instructor la programările de înot.\n'
+                    f'Setează-ți parola aici, apoi autentifică-te:\n\n{link_resetare(user)}',
+                    user.email)
         return Response(ser_instructor_cont(user), status=status.HTTP_201_CREATED)
 
 
@@ -521,10 +538,17 @@ class InstructorContView(APIView):
 
     def patch(self, request, pk):
         u = self._get(pk)
-        u.is_active = bool(request.data.get('activ'))
-        u.save(update_fields=['is_active'])
-        if not u.is_active:
-            Token.objects.filter(user=u).delete()
+        if 'parola' in request.data:
+            parola = str(request.data['parola'])
+            eroare_parola(parola, u)
+            u.set_password(parola)
+            u.save(update_fields=['password'])
+            Token.objects.filter(user=u).delete()  # sesiunile vechi se închid
+        if 'activ' in request.data:
+            u.is_active = bool(request.data['activ'])
+            u.save(update_fields=['is_active'])
+            if not u.is_active:
+                Token.objects.filter(user=u).delete()
         return Response(ser_instructor_cont(u))
 
     def delete(self, request, pk):
@@ -532,4 +556,62 @@ class InstructorContView(APIView):
         u = self._get(pk)
         u.is_staff = False
         u.save(update_fields=['is_staff'])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ---------- Superadmin: conturi de părinți ----------
+
+ZILE_INACTIV = 90
+
+
+class ParintiView(APIView):
+    """Conturile de părinți, cu semnalarea celor inactive (fără programări viitoare și fără activitate de 90 de zile)."""
+    permission_classes = [EsteSuperadmin]
+
+    def get(self, request):
+        azi = timezone.localtime(timezone.now()).date()
+        prag = timezone.now() - timedelta(days=ZILE_INACTIV)
+        rezultat = []
+        qs = (User.objects.filter(is_staff=False, is_superuser=False).select_related('profil')
+              .annotate(total=Count('programari'),
+                        viitoare=Count('programari', filter=Q(programari__data__gte=azi, programari__status='confirmat')))
+              .order_by('-date_joined'))
+        for u in qs:
+            ultima = u.last_login or u.date_joined
+            rezultat.append({
+                'id': u.id, 'email': u.email,
+                'nume': u.profil.nume if hasattr(u, 'profil') else '',
+                'telefon': u.profil.telefon if hasattr(u, 'profil') else '',
+                'creat': u.date_joined.date().isoformat(),
+                'ultima_activitate': ultima.date().isoformat(),
+                'programari': u.total, 'viitoare': u.viitoare, 'activ': u.is_active,
+                'inactiv': u.viitoare == 0 and ultima < prag,
+            })
+        return Response({'zile_inactiv': ZILE_INACTIV, 'conturi': rezultat})
+
+
+class ParinteContView(APIView):
+    permission_classes = [EsteSuperadmin]
+
+    def _get(self, pk):
+        try:
+            return User.objects.get(pk=pk, is_staff=False, is_superuser=False)
+        except User.DoesNotExist:
+            raise NotFound('Contul nu există.')
+
+    def patch(self, request, pk):
+        u = self._get(pk)
+        u.is_active = bool(request.data.get('activ'))
+        u.save(update_fields=['is_active'])
+        if not u.is_active:
+            Token.objects.filter(user=u).delete()
+        return Response({'id': u.id, 'activ': u.is_active})
+
+    def delete(self, request, pk):
+        """Șterge contul. Programările rămân în istoric (fără legătură cu un cont); cele viitoare blochează ștergerea."""
+        u = self._get(pk)
+        azi = timezone.localtime(timezone.now()).date()
+        if u.programari.filter(data__gte=azi, status='confirmat').exists():
+            raise ValidationError({'detail': 'Contul are programări viitoare active. Anulează-le întâi sau dezactivează contul.'})
+        u.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

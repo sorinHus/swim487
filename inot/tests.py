@@ -370,3 +370,70 @@ class ProgramareStaffTest(BazaTest):
             'sablon': self.sablon_pe(d).id, 'data': d.isoformat(), 'nume_copil': 'X', 'varsta': 5, 'cont': alt.id}, format='json')
         self.assertEqual(r.status_code, 201)
         self.assertEqual(Programare.objects.get(data=d).user, self.parinte)
+
+
+class ParolaSiParintiTest(BazaTest):
+    def setUp(self):
+        super().setUp()
+        User.objects.create_superuser('boss@test.ro', 'boss@test.ro', PAROLA)
+        self.boss = APIClient()
+        r = self.boss.post('/api/inot/auth/login/', {'email': 'boss@test.ro', 'parola': PAROLA}, format='json')
+        self.boss.credentials(HTTP_AUTHORIZATION='Token ' + r.json()['token'])
+
+    def test_instructor_cu_parola_setata_direct(self):
+        r = self.boss.post('/api/inot/superadmin/instructori/', {'email': 'i@test.ro', 'nume': 'I', 'parola': 'Parola-comuna-47'}, format='json')
+        self.assertEqual(r.status_code, 201, r.content)
+        self.assertNotIn('#/reset/', mail.outbox[-1].body)  # fără link: are parolă
+        r = APIClient().post('/api/inot/auth/login/', {'email': 'i@test.ro', 'parola': 'Parola-comuna-47'}, format='json')
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()['cont']['instructor'])
+        r = self.boss.post('/api/inot/superadmin/instructori/', {'email': 'j@test.ro', 'nume': 'J', 'parola': '123'}, format='json')
+        self.assertEqual(r.status_code, 400)  # parolă slabă
+
+    def test_parola_nu_se_suprascrie_unui_parinte_existent(self):
+        self.inregistreaza('p@test.ro')
+        r = self.boss.post('/api/inot/superadmin/instructori/', {'email': 'p@test.ro', 'nume': 'P', 'parola': 'Alta-parola-88z'}, format='json')
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(APIClient().post('/api/inot/auth/login/', {'email': 'p@test.ro', 'parola': PAROLA}, format='json').status_code, 200)
+
+    def test_schimba_parola_instructor(self):
+        r = self.boss.post('/api/inot/superadmin/instructori/', {'email': 'i@test.ro', 'nume': 'I', 'parola': 'Parola-comuna-47'}, format='json')
+        uid = r.json()['id']
+        r = self.boss.patch(f'/api/inot/superadmin/instructori/{uid}/', {'parola': 'Noua-parola-2026x'}, format='json')
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()['activ'])  # nu se dezactivează când schimbi doar parola
+        ok = APIClient().post('/api/inot/auth/login/', {'email': 'i@test.ro', 'parola': 'Noua-parola-2026x'}, format='json')
+        self.assertEqual(ok.status_code, 200)
+
+    def test_lista_parinti_si_inactivi(self):
+        self.inregistreaza('activ@test.ro')
+        d = urmatoarea_data(5)
+        self.programeaza(d)  # programare viitoare -> nu e inactiv
+        vechi = User.objects.create_user('vechi@test.ro', 'vechi@test.ro', PAROLA)
+        Profil.objects.create(user=vechi, nume='Vechi', telefon='0711111111')
+        User.objects.filter(pk=vechi.pk).update(date_joined=timezone.now() - timedelta(days=200), last_login=None)
+        r = self.boss.get('/api/inot/superadmin/parinti/').json()
+        conturi = {c['email']: c for c in r['conturi']}
+        self.assertEqual(set(conturi), {'activ@test.ro', 'vechi@test.ro'})  # fără staff/superadmin
+        self.assertFalse(conturi['activ@test.ro']['inactiv'])
+        self.assertEqual(conturi['activ@test.ro']['viitoare'], 1)
+        self.assertTrue(conturi['vechi@test.ro']['inactiv'])
+        self.assertEqual(self.c.get('/api/inot/superadmin/parinti/').status_code, 403)
+
+    def test_stergere_cont_inactiv_si_blocare_cu_programari_viitoare(self):
+        self.inregistreaza('activ@test.ro')
+        d = urmatoarea_data(5)
+        self.programeaza(d)
+        activ = User.objects.get(username='activ@test.ro')
+        r = self.boss.delete(f'/api/inot/superadmin/parinti/{activ.id}/')
+        self.assertEqual(r.status_code, 400)
+        Programare.objects.update(status='anulat')
+        self.assertEqual(self.boss.delete(f'/api/inot/superadmin/parinti/{activ.id}/').status_code, 204)
+        self.assertFalse(User.objects.filter(pk=activ.pk).exists())
+        self.assertEqual(Programare.objects.count(), 1)  # istoricul rămâne, fără cont
+        self.assertIsNone(Programare.objects.get().user)
+
+    def test_nu_se_poate_sterge_staff_sau_superadmin(self):
+        boss = User.objects.get(username='boss@test.ro')
+        self.assertEqual(self.boss.delete(f'/api/inot/superadmin/parinti/{boss.id}/').status_code, 404)
+        self.assertTrue(User.objects.filter(pk=boss.pk).exists())

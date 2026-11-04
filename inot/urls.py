@@ -24,4 +24,6 @@ urlpatterns = [
 
     path('superadmin/instructori/', v.InstructoriView.as_view()),
     path('superadmin/instructori/<int:pk>/', v.InstructorContView.as_view()),
+    path('superadmin/parinti/', v.ParintiView.as_view()),
+    path('superadmin/parinti/<int:pk>/', v.ParinteContView.as_view()),
 ]
